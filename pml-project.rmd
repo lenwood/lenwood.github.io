@@ -1,0 +1,108 @@
+---
+title: "Practical Machine Learning Project"
+author: "Chris Leonard"
+date: "Sunday, December 21, 2014"
+output:
+  html_document:
+    theme: spacelab
+---
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: [http://groupware.les.inf.puc-rio.br/har](http://groupware.les.inf.puc-rio.br/har) (see the section on the Weight Lifting Exercise Dataset).
+
+My goal in this project is to predict the manner in which they did the exercise via the **classe** variable within the data set.
+
+```{r, message=FALSE, load}
+library(randomForest)
+library(rpart)
+library(ggplot2)
+
+# load data
+WLE <- read.table("pml-training.csv", 
+                  sep=",", 
+                  nrows=19700, 
+                  header=TRUE, 
+                  na.strings=c("NA","#DIV/0!", ""),
+                  stringsAsFactors=FALSE)
+```
+
+I'll now clean the data by removing irrelevant columns of data. I'll do this in 2 steps, first removing the first 7 rows of data as they won't help with prediction. Next I'll remove columns that have no data at all. Lastly, I'll split the data into three data sets: train, test & validate.
+
+```{r, clean}
+# drop 1st 7 rows as not relevant
+WLE <- WLE[,-c(1:7)]
+
+# remove columns with entirely missing values
+WLE <- WLE[,colSums(is.na(WLE)) == 0]
+
+# factorize classe
+WLE$classe <- factor(WLE$classe)
+
+# split this into test, train & validation sets
+set.seed(42)
+index <- sample(1:nrow(WLE), 2*(nrow(WLE)/5), replace=FALSE)
+tempSub <- WLE[index,]
+trainSub <- WLE[-index,]
+index <- sample(1:nrow(tempSub), nrow(tempSub)/2, replace=FALSE)
+testSub <- tempSub[index,]
+validationSub <- tempSub[-index,]
+rm(index, tempSub)
+table(trainSub$classe)
+```
+
+Now I'm ready to begin making predictions. I'll start with a decision tree based model.
+
+```{r, treePrediction}
+set.seed(42)
+treeFit  <- rpart(classe ~ ., data=trainSub, method="class")
+treePred <- predict(treeFit, testSub, type="class")
+treeTable <- table(treePred, testSub$classe)
+treeAccuracy <- 1 - sum(testSub$classe!=treePred) / nrow(testSub)
+treeTable
+treeAccuracy
+```
+
+With an overall accuraty of 0.75, the in-sample error rate is 0.25, which seems quite high. Next I'll create a model with random forest to see if this improves.
+
+```{r, rfPrediction}
+# create the random forest model
+rfFit <- randomForest(classe ~ ., data=trainSub, method="class")
+
+# evaluate against the test set
+rfTest <- predict(rfFit, testSub, type="class")
+rfTestTable <- table(rfTest, testSub$classe)
+rfTestAccuracy <- 1 - sum(testSub$classe!=rfTest) / nrow(testSub)
+rfTestTable
+rfTestAccuracy
+```
+
+Here I've attained an accuracy of 0.99. That's **much** better.
+
+One of the nice features of the random forest algorithm is that when decision trees are created, the algorithm withholds a fraction of the samples for testing while the model is being created. This allows random forests to make a reasonably unbiased measure of out-of-sample error without doing traditional cross-validation.
+
+I'll quickly confirm this against my validation set.
+
+```{r, rfValidation}
+# confirm against the validation set
+rfValidation <- predict(rfFit, validationSub, type="class")
+rfValTable <- table(rfValidation, validationSub$classe)
+rfValAccuracy <- 1 - sum(validationSub$classe!=rfValidation) / nrow(validationSub)
+rfValTable
+rfValAccuracy
+```
+
+Validation accuracy is again 0.99. My model hadn't yet seen this data, so this random forests model has an out-of-sample error of less than 0.01, which is quite good. As a last step I'll plot the variable importance within my model.
+
+```{r, plot}
+data <- as.data.frame(cbind(rownames(rfFit$importance), round(rfFit$importance[,"MeanDecreaseGini"], 1)))
+names(data) <- c("Parameters", "MeanDecreaseGini")
+data$MeanDecreaseGini <- as.numeric(as.character(data$MeanDecreaseGini))
+rownames(data) <- NULL
+order <- order(data$MeanDecreaseGini)
+lvl <- data$Parameters[order]
+data$Variable <- factor(data$Parameters, levels=lvl)
+
+gg <- ggplot(data) + geom_point(aes(x=Variable, y=MeanDecreaseGini)) + coord_flip()
+gg <- gg + labs(list(x="Variable", y="Relative Importance", title="Variable Importance in Predictive Model"))
+gg
+```
+
